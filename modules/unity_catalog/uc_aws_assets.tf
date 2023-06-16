@@ -130,11 +130,8 @@ resource "aws_iam_role" "metastore_data_access" {
 ################################
 
 resource "databricks_metastore" "this" {
-  # provider     = databricks.workspace
   name         = "yh-metastore-terraform"
   storage_root = "s3://${aws_s3_bucket.metastore.id}/metastore"
-  #   owner         = var.unity_admin_group
-  #   owner         = "xxx"
   force_destroy = true
 }
 
@@ -148,7 +145,6 @@ resource "time_sleep" "wait_for_metastore_creation" {
 }
 
 resource "databricks_metastore_data_access" "this" {
-  # provider     = databricks.workspace
   metastore_id = databricks_metastore.this.id
   name         = aws_iam_role.metastore_data_access.name
   aws_iam_role {
@@ -162,7 +158,6 @@ resource "databricks_metastore_data_access" "this" {
 }
 
 resource "databricks_metastore_assignment" "default_metastore" {
-  # provider = databricks.workspace
   workspace_id         = var.workspace_id
   metastore_id         = databricks_metastore.this.id
   default_catalog_name = "hive_metastore"
