@@ -16,7 +16,7 @@ terraform {
 ################################
 
 provider "aws" {
-  region = var.region
+  region     = var.region
   access_key = var.aws_access_key
   secret_key = var.aws_secret_key
 }
@@ -29,35 +29,48 @@ provider "databricks" {
 }
 
 module "workspace" {
-  source       = "./modules/workspace"
-  prefix = "yh-terraform-modules-test1"
+  source                = "./modules/workspace"
+  prefix                = "yh-terraform-modules-test1"
   databricks_account_id = var.databricks_account_id
-  region = var.region
-  tags = var.tags
-  cidr_block = var.cidr_block
+  region                = var.region
+  tags                  = var.tags
+  cidr_block            = var.cidr_block
 
   providers = {
     databricks = databricks.mws
-    aws = aws
+    aws        = aws
   }
-
 }
 
+# creating databricks workspace provider after creating workspace
+provider "databricks" {
+  alias = "workspace"
+  host  = module.workspace.databricks_workspace_url
+  token = module.workspace.databricks_workspace_token
+}
 
 ################################
 #### Creating UC assets
 ################################
 
+module "uc_assets" {
+  source                = "./modules/unity_catalog"
+  aws_account_id        = var.aws_account_id
+  databricks_account_id = var.databricks_account_id
+  tags                  = var.tags
+  prefix_uc             = "yh-uc-test-1"
+  workspace_id          = module.workspace.databricks_workspace_id
+
+  providers = {
+    databricks = databricks.workspace
+    aws        = aws
+  }
+
+}
 
 ################################
 #### Creating workspace assets
 ################################
-
-# provider "databricks" {
-#   alias = "workspace"
-#   host  = module.workspace.databricks_workspace_url
-#   token = module.workspace.databricks_workspace_token
-# }
 
 # module "clusters" {
 #   source       = "./modules/clusters"

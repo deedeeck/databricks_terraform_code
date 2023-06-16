@@ -173,7 +173,7 @@ output "databricks_workspace_token" {
 }
 
 output "databricks_workspace_id" {
-  value     = databricks_mws_workspaces.this.id
+  value     = tonumber(split("/", databricks_mws_workspaces.this.id)[1])
   # sensitive = true
 }
 
