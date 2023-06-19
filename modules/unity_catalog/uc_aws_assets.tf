@@ -162,3 +162,11 @@ resource "databricks_metastore_assignment" "default_metastore" {
   metastore_id         = databricks_metastore.this.id
   default_catalog_name = "hive_metastore"
 }
+
+
+#  assume_role_policy  = data.aws_iam_policy_document.passrole_for_uc.json
+
+# Need to pass this policy json for uc migration demo
+output "aws_iam_role_passrole_for_uc_json" {
+  value = data.aws_iam_policy_document.passrole_for_uc.json
+}
