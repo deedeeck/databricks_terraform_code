@@ -22,6 +22,14 @@ variable "aws_secret_key" {
   default = "xxx"
 }
 
+variable "prefix" {
+  default = "xxx"
+}
+
+variable "prefix_uc" {
+  default = "xxx"
+}
+
 variable "tags" {
   default = {}
 }

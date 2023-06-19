@@ -30,7 +30,7 @@ provider "databricks" {
 
 module "workspace" {
   source                = "./modules/workspace"
-  prefix                = "yh-terraform-modules-test1"
+  prefix                = var.prefix
   databricks_account_id = var.databricks_account_id
   region                = var.region
   tags                  = var.tags
@@ -58,7 +58,7 @@ module "uc_assets" {
   aws_account_id        = var.aws_account_id
   databricks_account_id = var.databricks_account_id
   tags                  = var.tags
-  prefix_uc             = "yh-uc-test-1"
+  prefix_uc             = var.prefix_uc
   workspace_id          = module.workspace.databricks_workspace_id
 
   providers = {
