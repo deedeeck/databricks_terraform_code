@@ -69,6 +69,27 @@ module "uc_assets" {
 }
 
 ################################
+#### Creating UC migration assets
+################################
+
+module "uc_migration" {
+  source                            = "./modules/unity_catalog_migration"
+  prefix                            = var.prefix
+  prefix_uc                         = var.prefix_uc
+  pre_uc_s3_external_bucket_name    = "${var.prefix}-pre-uc-external-s3-bucket"
+  cross_acct_iam_role_name          = "${var.prefix}-crossaccount"
+  instance_profile_name             = "${var.prefix}-instance-profile"
+  tags                              = var.tags
+  aws_iam_role_passrole_for_uc_json = module.uc_assets.aws_iam_role_passrole_for_uc_json
+
+  providers = {
+    databricks = databricks.workspace
+    aws        = aws
+  }
+
+}
+
+################################
 #### Creating workspace assets
 ################################
 
