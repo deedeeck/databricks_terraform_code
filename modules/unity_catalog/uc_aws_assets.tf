@@ -130,7 +130,7 @@ resource "aws_iam_role" "metastore_data_access" {
 ################################
 
 resource "databricks_metastore" "this" {
-  name         = "yh-metastore-terraform"
+  name         = "${var.prefix_uc}-metastore-terraform"
   storage_root = "s3://${aws_s3_bucket.metastore.id}/metastore"
   force_destroy = true
 }
