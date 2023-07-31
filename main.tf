@@ -105,6 +105,6 @@ module "uc_migration" {
 #   }
 # }
 
-# output "ba" {
+# output "clusters_url" {
 #   value = module.clusters.cluster_url
 # }
