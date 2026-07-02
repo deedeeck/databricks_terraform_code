@@ -14,8 +14,15 @@ variable "prefix_uc" {
   type = string
 }
 
+# random suffix so every deployment gets a fresh IAM role name. Reusing a
+# just-deleted role name breaks STS/S3 for hours due to AWS eventual
+# consistency (deleted role IDs are cached against the ARN)
+resource "random_id" "role_suffix" {
+  byte_length = 2
+}
+
 locals {
-  storage_credential_role_name = "${var.prefix_uc}-storage-credential-role"
+  storage_credential_role_name = "${var.prefix_uc}-storage-credential-role-${random_id.role_suffix.hex}"
 }
 
 ################################

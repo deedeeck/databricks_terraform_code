@@ -2,10 +2,16 @@
 #### Creating UC assets in databricks workspace
 ################################
 
-# wait for the IAM role to propagate, otherwise storage credential
-# validation can fail right after role creation
+# wait for the IAM role to propagate, otherwise storage credential /
+# external location validation can fail right after role creation.
+# propagation occasionally takes longer than this; if the apply still
+# fails with an AccessDenied error, simply re-run terraform apply
 resource "time_sleep" "wait_for_storage_credential_role" {
-  create_duration = "30s"
+  create_duration = "60s"
+  # re-fire the wait whenever the role is replaced
+  triggers = {
+    role_arn = aws_iam_role.external_data_access.arn
+  }
   depends_on = [
     aws_iam_role.external_data_access,
     aws_iam_role_policy_attachment.external_data_access

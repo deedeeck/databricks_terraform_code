@@ -26,8 +26,15 @@ variable "tags" {
   type = map(string)
 }
 
+# random suffix so every deployment gets a fresh IAM role name. Reusing a
+# just-deleted role name breaks STS/S3 for hours due to AWS eventual
+# consistency (deleted role IDs are cached against the ARN)
+resource "random_id" "role_suffix" {
+  byte_length = 2
+}
+
 locals {
-  pre_uc_storage_credential_role_name = "${var.prefix_uc}-storage-credential-role-for-pre-uc-s3-location"
+  pre_uc_storage_credential_role_name = "${var.prefix_uc}-pre-uc-storage-credential-role-${random_id.role_suffix.hex}"
 }
 
 ################################
@@ -227,10 +234,16 @@ resource "aws_iam_role_policy_attachment" "external_data_access_to_pre_uc_s3_loc
 ##### Creating resultant UC assets in databricks workspace
 #####
 
-# wait for the IAM role to propagate, otherwise storage credential
-# validation can fail right after role creation
+# wait for the IAM role to propagate, otherwise storage credential /
+# external location validation can fail right after role creation.
+# propagation occasionally takes longer than this; if the apply still
+# fails with an AccessDenied error, simply re-run terraform apply
 resource "time_sleep" "wait_for_pre_uc_storage_credential_role" {
-  create_duration = "30s"
+  create_duration = "60s"
+  # re-fire the wait whenever the role is replaced
+  triggers = {
+    role_arn = aws_iam_role.external_data_access_to_pre_uc_s3_location.arn
+  }
   depends_on = [
     aws_iam_role.external_data_access_to_pre_uc_s3_location,
     aws_iam_role_policy_attachment.external_data_access_to_pre_uc_s3_location
