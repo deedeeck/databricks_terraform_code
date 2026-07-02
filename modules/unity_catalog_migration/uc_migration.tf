@@ -1,44 +1,68 @@
-variable prefix {}
-variable prefix_uc {}
-variable pre_uc_s3_external_bucket_name {}
-variable cross_acct_iam_role_name {}
-variable instance_profile_name {}
-variable tags {}
-variable aws_iam_role_passrole_for_uc_json {}
+variable "aws_account_id" {
+  type = string
+}
+
+variable "databricks_account_id" {
+  type = string
+}
+
+variable "prefix" {
+  type = string
+}
+
+variable "prefix_uc" {
+  type = string
+}
+
+variable "cross_acct_iam_role_name" {
+  type = string
+}
+
+variable "pre_uc_s3_external_bucket_name" {
+  type = string
+}
+
+variable "tags" {
+  type = map(string)
+}
+
+locals {
+  pre_uc_storage_credential_role_name = "${var.prefix_uc}-storage-credential-role-for-pre-uc-s3-location"
+}
 
 ################################
 # This script will create all the AWS + Databricks assets to do a U.C migration
 # Assets to be created:
-# * Instance profile and related AWS assets
-# * UC storage credential that points to pre-uc external table s3 location
+# * "pre-UC" external S3 bucket that simulates data created before UC
+# * Instance profile and related AWS assets (the pre-UC access pattern)
+# * UC storage credential + external location that point to that bucket
 ################################
 
 
 ################################
-#### External S3 bucket and creating bucket policy
+#### External S3 bucket
 ################################
 
 resource "aws_s3_bucket" "pre_uc_s3_external_bucket" {
-  bucket = var.pre_uc_s3_external_bucket_name
-  acl    = "private"
-  versioning {
-    enabled = false
-  }
+  bucket        = var.pre_uc_s3_external_bucket_name
   force_destroy = true
+  tags = merge(var.tags, {
+    Name = var.pre_uc_s3_external_bucket_name
+  })
 }
 
-data "databricks_aws_bucket_policy" "stuff" {
-  bucket = aws_s3_bucket.pre_uc_s3_external_bucket.bucket
-}
-
-resource "aws_s3_bucket_policy" "this" {
-  bucket = aws_s3_bucket.pre_uc_s3_external_bucket.id
-  policy = data.databricks_aws_bucket_policy.stuff.json
+resource "aws_s3_bucket_public_access_block" "pre_uc_s3_external_bucket" {
+  bucket                  = aws_s3_bucket.pre_uc_s3_external_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+  depends_on              = [aws_s3_bucket.pre_uc_s3_external_bucket]
 }
 
 
 ################################
-#### Instance profile creation
+#### Instance profile creation (pre-UC access pattern)
 ################################
 
 # create assume-role iam policy
@@ -54,45 +78,45 @@ data "aws_iam_policy_document" "assume_role_for_ec2" {
 }
 
 # create instance profile iam role & attach assume-role policy above to this role
-# adding inline policy since our tf docs did not specify this
 resource "aws_iam_role" "role_for_s3_access" {
-  name               = var.instance_profile_name
+  name               = "${var.prefix}-instance-profile"
   description        = "Role for instance profile"
   assume_role_policy = data.aws_iam_policy_document.assume_role_for_ec2.json
-  inline_policy {
-    name = "instance_profile_inline_policy"
+  tags               = var.tags
+}
 
-    policy = jsonencode(
+# inline_policy on aws_iam_role was removed in aws provider v6,
+# a standalone aws_iam_role_policy is used instead
+resource "aws_iam_role_policy" "instance_profile_s3_access" {
+  name = "instance_profile_inline_policy"
+  role = aws_iam_role.role_for_s3_access.id
 
+  policy = jsonencode({
+    "Version" = "2012-10-17",
+    "Statement" = [
       {
-        "Version" = "2012-10-17",
-        "Statement" = [
-          {
-            "Effect" = "Allow",
-            "Action" = [
-              "s3:ListBucket"
-            ],
-            "Resource" = [
-              "arn:aws:s3:::${var.pre_uc_s3_external_bucket_name}"
-            ]
-          },
-          {
-            "Effect" = "Allow",
-            "Action" = [
-              "s3:PutObject",
-              "s3:GetObject",
-              "s3:DeleteObject",
-              "s3:PutObjectAcl"
-            ],
-            "Resource" = [
-              "arn:aws:s3:::${var.pre_uc_s3_external_bucket_name}/*"
-            ]
-          }
+        "Effect" = "Allow",
+        "Action" = [
+          "s3:ListBucket"
+        ],
+        "Resource" = [
+          aws_s3_bucket.pre_uc_s3_external_bucket.arn
+        ]
+      },
+      {
+        "Effect" = "Allow",
+        "Action" = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:PutObjectAcl"
+        ],
+        "Resource" = [
+          "${aws_s3_bucket.pre_uc_s3_external_bucket.arn}/*"
         ]
       }
-
-    )
-  }
+    ]
+  })
 }
 
 # create pass-role iam policy
@@ -104,14 +128,14 @@ data "aws_iam_policy_document" "pass_role_for_s3_access" {
   }
 }
 
-# create in-line policy & attach pass-role policy above to this policy
 resource "aws_iam_policy" "pass_role_for_s3_access" {
-  name   = "${var.prefix}-inline-policy-instance-profile"
+  name   = "${var.prefix}-policy-pass-role-instance-profile"
   path   = "/"
   policy = data.aws_iam_policy_document.pass_role_for_s3_access.json
 }
 
-# attaching above policy to workspace cross acct iam role
+# attaching above policy to workspace cross acct iam role, so the workspace
+# is allowed to launch clusters with this instance profile
 resource "aws_iam_role_policy_attachment" "cross_account" {
   policy_arn = aws_iam_policy.pass_role_for_s3_access.arn
   role       = var.cross_acct_iam_role_name
@@ -123,17 +147,33 @@ resource "aws_iam_instance_profile" "shared" {
   role = aws_iam_role.role_for_s3_access.name
 }
 
+# wait for IAM propagation, databricks validates the pass-role setup
+# when registering the instance profile
+resource "time_sleep" "wait_for_instance_profile" {
+  create_duration = "30s"
+  depends_on = [
+    aws_iam_instance_profile.shared,
+    aws_iam_role_policy_attachment.cross_account
+  ]
+}
+
 # attaching iam role for instance profile to databricks workspace
 resource "databricks_instance_profile" "shared" {
-#   provider             = databricks.workspace
   instance_profile_arn = aws_iam_instance_profile.shared.arn
+  depends_on           = [time_sleep.wait_for_instance_profile]
 }
 
 
 ################################
 ##### Creating AWS assets for migration demo-purposes
-##### Will create an IAM role for a storage credential that points to pre-uc external table s3 location
+##### IAM role for a storage credential that points to pre-uc external table s3 location
 ################################
+
+data "databricks_aws_unity_catalog_assume_role_policy" "pre_uc" {
+  aws_account_id = var.aws_account_id
+  role_name      = local.pre_uc_storage_credential_role_name
+  external_id    = var.databricks_account_id
+}
 
 resource "aws_iam_policy" "external_data_access_to_pre_uc_s3_location" {
   policy = jsonencode({
@@ -155,41 +195,64 @@ resource "aws_iam_policy" "external_data_access_to_pre_uc_s3_location" {
           "${aws_s3_bucket.pre_uc_s3_external_bucket.arn}/*"
         ],
         "Effect" : "Allow"
+      },
+      {
+        # UC requires the role to be self-assuming : it must be able to
+        # call sts:AssumeRole on itself, in addition to the trust policy
+        "Action" : ["sts:AssumeRole"],
+        "Resource" : ["arn:aws:iam::${var.aws_account_id}:role/${local.pre_uc_storage_credential_role_name}"],
+        "Effect" : "Allow"
       }
     ]
   })
   tags = merge(var.tags, {
-    Name = "${var.prefix_uc}-inline-policy-uc-storage-credential-for-pre-uc-s3-location"
+    Name = "${var.prefix_uc}-policy-uc-storage-credential-for-pre-uc-s3-location"
   })
 }
 
 resource "aws_iam_role" "external_data_access_to_pre_uc_s3_location" {
-  name                = "${var.prefix_uc}-storage-credential-role-for-pre-uc-s3-location"
-#   assume_role_policy  = data.aws_iam_policy_document.passrole_for_uc.json
-  assume_role_policy  = var.aws_iam_role_passrole_for_uc_json
-  managed_policy_arns = [aws_iam_policy.external_data_access_to_pre_uc_s3_location.arn]
+  name               = local.pre_uc_storage_credential_role_name
+  assume_role_policy = data.databricks_aws_unity_catalog_assume_role_policy.pre_uc.json
   tags = merge(var.tags, {
     Name = "${var.prefix_uc}-unity-catalog-storage-credential-for-pre-uc-s3-location-iam-role"
   })
+}
+
+resource "aws_iam_role_policy_attachment" "external_data_access_to_pre_uc_s3_location" {
+  role       = aws_iam_role.external_data_access_to_pre_uc_s3_location.name
+  policy_arn = aws_iam_policy.external_data_access_to_pre_uc_s3_location.arn
 }
 
 #####
 ##### Creating resultant UC assets in databricks workspace
 #####
 
+# wait for the IAM role to propagate, otherwise storage credential
+# validation can fail right after role creation
+resource "time_sleep" "wait_for_pre_uc_storage_credential_role" {
+  create_duration = "30s"
+  depends_on = [
+    aws_iam_role.external_data_access_to_pre_uc_s3_location,
+    aws_iam_role_policy_attachment.external_data_access_to_pre_uc_s3_location
+  ]
+}
+
 resource "databricks_storage_credential" "external" {
-#   provider = databricks.workspace
-  name     = "${var.prefix_uc}-storage-credential-for-pre-uc-s3-location"
+  name = "${var.prefix_uc}-storage-credential-for-pre-uc-s3-location"
   aws_iam_role {
     role_arn = aws_iam_role.external_data_access_to_pre_uc_s3_location.arn
   }
-  comment = "Managed by TF"
+  comment       = "Managed by TF"
+  force_destroy = true
+  depends_on    = [time_sleep.wait_for_pre_uc_storage_credential_role]
 }
 
+# force_destroy allows terraform destroy to remove the location even when
+# catalogs/tables were created on it (fine for a demo environment)
 resource "databricks_external_location" "this" {
-#   provider        = databricks.workspace
   name            = "${var.prefix_uc}-pre-uc-s3-location-external-location"
   url             = "s3://${aws_s3_bucket.pre_uc_s3_external_bucket.id}"
   credential_name = databricks_storage_credential.external.id
   comment         = "Managed by TF"
+  force_destroy   = true
 }

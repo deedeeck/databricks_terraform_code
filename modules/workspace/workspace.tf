@@ -1,18 +1,40 @@
-variable databricks_account_id {}
-variable "tags" {}
-variable "cidr_block" {}
-variable "region" {}
-variable "prefix" {}
+variable "databricks_account_id" {
+  type = string
+}
+
+variable "tags" {
+  type = map(string)
+}
+
+variable "cidr_block" {
+  type = string
+}
+
+variable "region" {
+  type = string
+}
+
+variable "prefix" {
+  type = string
+}
 
 ################################
 #### Creating customer managed vpc
 ################################
 
-data "aws_availability_zones" "available" {}
+# zone-type filter excludes Local Zones (e.g. ap-southeast-1-han-1a),
+# which do not support NAT gateways
+data "aws_availability_zones" "available" {
+  state = "available"
+  filter {
+    name   = "zone-type"
+    values = ["availability-zone"]
+  }
+}
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "2.70.0"
+  version = "~> 6.0"
 
   name = var.prefix
   cidr = var.cidr_block
@@ -21,11 +43,14 @@ module "vpc" {
 
   enable_dns_hostnames = true
   enable_nat_gateway   = true
+  single_nat_gateway   = true
   create_igw           = true
 
   public_subnets = [cidrsubnet(var.cidr_block, 3, 0)]
   private_subnets = [cidrsubnet(var.cidr_block, 3, 1),
   cidrsubnet(var.cidr_block, 3, 2)]
+
+  manage_default_security_group = true
 
   default_security_group_egress = [{
     cidr_blocks = "0.0.0.0/0"
@@ -38,7 +63,6 @@ module "vpc" {
 }
 
 resource "databricks_mws_networks" "this" {
-  # provider           = databricks.mws
   account_id         = var.databricks_account_id
   network_name       = "${var.prefix}-network"
   security_group_ids = [module.vpc.default_security_group_id]
@@ -75,29 +99,20 @@ resource "aws_iam_role_policy" "this" {
 resource "time_sleep" "wait_for_cross_account_role" {
   create_duration = "20s"
   depends_on      = [aws_iam_role_policy.this, aws_iam_role.cross_account_role]
-
 }
 
 resource "databricks_mws_credentials" "this" {
-  # provider         = databricks.mws
-  account_id       = var.databricks_account_id
   role_arn         = aws_iam_role.cross_account_role.arn
   credentials_name = "${var.prefix}-creds"
   depends_on       = [time_sleep.wait_for_cross_account_role]
-  # depends_on       = [aws_iam_role_policy.this]
 }
 
 ################################
 #### Workspace root bucket
 ################################
 
-
 resource "aws_s3_bucket" "root_storage_bucket" {
-  bucket = "${var.prefix}-rootbucket"
-  acl    = "private"
-  versioning {
-    enabled = false
-  }
+  bucket        = "${var.prefix}-rootbucket"
   force_destroy = true
   tags = merge(var.tags, {
     Name = "${var.prefix}-rootbucket"
@@ -134,7 +149,6 @@ resource "aws_s3_bucket_policy" "root_bucket_policy" {
 }
 
 resource "databricks_mws_storage_configurations" "this" {
-  # provider                   = databricks.mws
   account_id                 = var.databricks_account_id
   bucket_name                = aws_s3_bucket.root_storage_bucket.bucket
   storage_configuration_name = "${var.prefix}-storage"
@@ -145,9 +159,7 @@ resource "databricks_mws_storage_configurations" "this" {
 #### Creating actual workspace
 ################################
 
-
 resource "databricks_mws_workspaces" "this" {
-  # provider       = databricks.mws
   account_id     = var.databricks_account_id
   aws_region     = var.region
   workspace_name = var.prefix
@@ -155,11 +167,14 @@ resource "databricks_mws_workspaces" "this" {
   credentials_id           = databricks_mws_credentials.this.credentials_id
   storage_configuration_id = databricks_mws_storage_configurations.this.storage_configuration_id
   network_id               = databricks_mws_networks.this.network_id
-  # comment out netword_id if using databricks managed vpc
+  # comment out network_id if using databricks managed vpc
 
+  # PAT for the workspace-level provider, created as the workspace creator
+  # (your user). The token block is deprecated but is the simplest way to
+  # bootstrap workspace auth in the same apply when deploying as a human user
   token {
     comment          = "Terraform PAT"
-    lifetime_seconds = "2592000" # 30 days
+    lifetime_seconds = 2592000 # 30 days
   }
 }
 
@@ -167,13 +182,15 @@ output "databricks_workspace_url" {
   value = databricks_mws_workspaces.this.workspace_url
 }
 
+output "databricks_workspace_id" {
+  value = databricks_mws_workspaces.this.workspace_id
+}
+
 output "databricks_workspace_token" {
   value     = databricks_mws_workspaces.this.token[0].token_value
-  # sensitive = true
+  sensitive = true
 }
 
-output "databricks_workspace_id" {
-  value     = tonumber(split("/", databricks_mws_workspaces.this.id)[1])
-  # sensitive = true
+output "cross_account_role_name" {
+  value = aws_iam_role.cross_account_role.name
 }
-

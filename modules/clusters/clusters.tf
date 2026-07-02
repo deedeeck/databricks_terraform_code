@@ -1,14 +1,23 @@
-variable "cluster_name" {}
-# variable "cluster_autotermination_minutes" {}
-# variable "cluster_num_workers" {}
-# variable "cluster_data_security_mode" {}
+variable "cluster_name" {
+  type = string
+}
+
+# look up latest LTS runtime and smallest node type instead of hardcoding
+data "databricks_spark_version" "latest_lts" {
+  long_term_support = true
+}
+
+data "databricks_node_type" "smallest" {
+  local_disk = true
+}
 
 resource "databricks_cluster" "this" {
   cluster_name            = var.cluster_name
-  node_type_id            = "i3.xlarge"
-  spark_version           = "12.2.x-scala2.12"
-  autotermination_minutes = "10"
-  num_workers             = "1"
+  node_type_id            = data.databricks_node_type.smallest.id
+  spark_version           = data.databricks_spark_version.latest_lts.id
+  autotermination_minutes = 10
+  num_workers             = 1
+  data_security_mode      = "USER_ISOLATION" # standard access mode, UC enabled
 }
 
 output "cluster_url" {
