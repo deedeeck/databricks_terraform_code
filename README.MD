@@ -1,6 +1,6 @@
 # Databricks on AWS Terraform scripts
 
-Learning repo that provisions everything needed to get a Databricks workspace on AWS up and running with Unity Catalog assets, in a single `terraform apply`:
+Learning repo that pre-creates an environment for **practicing a Unity Catalog migration**: a workspace with both the legacy hive_metastore world (data on S3 accessed via an instance profile) and the UC world (storage credentials + external locations) side by side, so you can walk through upgrading legacy tables to UC hands-on. Everything deploys in a single `terraform apply`:
 
 * **Workspace** (`modules/workspace`): customer-managed VPC, cross-account IAM role, workspace root S3 bucket, and the E2 workspace itself
 * **Unity Catalog assets** (`modules/unity_catalog`): UC storage credential and external location, plus the S3 bucket and IAM role behind them
@@ -45,6 +45,52 @@ The workspace-level provider uses a 30-day PAT that the workspace creates for yo
 3. `terraform apply`
 
 Because your user creates the workspace, you are automatically a workspace admin and the owner of the UC objects, everything is visible in the workspace UI.
+
+## Simulating a UC migration
+
+This is the point of the repo. After the apply, the environment maps to the two eras of a migration:
+
+| Terraform asset | Role in the migration story |
+|---|---|
+| `<prefix>-instance-profile` | Legacy (pre-UC) access: how clusters reached S3 before Unity Catalog |
+| `s3://<prefix>-pre-uc-external-s3-bucket` | The "legacy data" bucket where hive_metastore tables live |
+| `<prefix_uc>-pre-uc-s3-location-external-location` | UC-era access to that same bucket, the prerequisite for upgrading its tables to UC |
+| `<prefix_uc>-external-location` | A fresh UC-native location for net-new data after the migration |
+
+### Step 1 : create the legacy world
+
+Create a cluster with **no isolation shared / legacy access mode** and attach the instance profile (`<prefix>-instance-profile`) under the cluster's instance profile setting. On it, register an external table in hive_metastore backed by the pre-UC bucket:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS hive_metastore.legacy_db;
+
+CREATE TABLE hive_metastore.legacy_db.trips
+LOCATION 's3://<prefix>-pre-uc-external-s3-bucket/trips'
+AS SELECT id, id % 10 AS zone, rand() * 100 AS fare FROM range(100000);
+```
+
+This is the "customer starting point": data in S3, table registered only in hive_metastore, access via instance profile.
+
+### Step 2 : migrate the table to UC
+
+The UC external location covering the pre-UC bucket already exists (terraform created it), which is exactly what `SYNC` needs. From a UC-enabled cluster or SQL warehouse:
+
+```sql
+CREATE CATALOG IF NOT EXISTS migrated;
+CREATE SCHEMA IF NOT EXISTS migrated.legacy_db;
+
+SYNC TABLE migrated.legacy_db.trips FROM hive_metastore.legacy_db.trips;
+```
+
+`SYNC` upgrades the external table in place: the data stays where it is in S3, and the table becomes a UC external table governed through the external location instead of the instance profile. Alternatives to practice: the **Upgrade wizard** in Catalog Explorer (right-click a hive_metastore schema), `SYNC SCHEMA` for bulk upgrades, or `CREATE TABLE ... AS SELECT` / `DEEP CLONE` into a UC **managed** table when you want to relocate the data rather than upgrade in place.
+
+### Step 3 : validate and cut over
+
+* Query `migrated.legacy_db.trips` from a UC cluster (standard access mode, **no instance profile attached**) to prove access now flows through the storage credential
+* Compare row counts between the HMS and UC tables
+* In a real migration you would now repoint jobs/queries to the UC table and eventually drop the HMS entry (the data is untouched since the table is external)
+
+For real-world, large-scale migrations, look at [UCX](https://github.com/databrickslabs/ucx), the Databricks Labs migration toolkit; this repo is the hand-rolled version of what it automates, at learning scale.
 
 ## Notes (updated Jul 2026)
 
